@@ -9,9 +9,15 @@ let io;
 export const initializeSocket = (server) => {
   io = new Server(server, {
     cors: {
-      origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-      methods: ['GET', 'POST'],
-      credentials: true
+      origin: [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175"
+      ],
+      methods: ["GET", "POST"],
+      credentials: true,
+      allowedHeaders: ["Authorization"]
     },
     pingTimeout: 60000,
   });

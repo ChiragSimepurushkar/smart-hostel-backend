@@ -16,6 +16,7 @@ import staffRoutes from './route/staff.routes.js';
 import analyticsRoutes from './route/analytics.routes.js'
 import dashboardRoutes from './route/dashboard.routes.js';
 import userRoutes from './route/user.routes.js';
+import hostelRoutes from './route/hostel.routes.js';
 
 const app = express();
 
@@ -23,12 +24,37 @@ const app = express();
 app.use(helmet());
 
 // CORS configuration
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:5175',
+  'http://localhost:5174', // Added the port you are currently on
+  process.env.FRONTEND_URL
+];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.log('Blocked by CORS:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'Cache-Control',
+    'Pragma',
+  ],
 }));
+
+app.options('*', cors());
+
 
 // Body parser middleware
 app.use(express.json({ limit: '10mb' }));
@@ -71,6 +97,7 @@ app.get('/api', (req, res) => {
       analytics: '/api/analytics',
       dashboard: '/api/dashboard',
       users: '/api/users',
+      hostels: '/api/hostels',
     },
   });
 });
@@ -84,7 +111,7 @@ app.use('/api/staff', staffRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/users', userRoutes);
-
+app.use('/api/hostels', hostelRoutes);
 // 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({

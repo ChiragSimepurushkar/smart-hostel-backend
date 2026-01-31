@@ -13,6 +13,11 @@ const hostelSchema = new mongoose.Schema(
       default: 0,
     },
     capacity: Number,
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+
   },
   {
     timestamps: true,

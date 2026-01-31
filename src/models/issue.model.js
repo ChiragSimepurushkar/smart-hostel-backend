@@ -10,6 +10,10 @@ const issueSchema = new mongoose.Schema(
     description: {
       type: String,
       required: true,
+      required: [true, 'Description is required'],
+      trim: true,
+      minlength: [20, 'Description must be at least 20 characters'],
+      maxlength: [2000, 'Description must not exceed 2000 characters'], // ✅ INCREASED FROM 500 to 2000
     },
     category: {
       type: String,
@@ -51,6 +55,7 @@ const issueSchema = new mongoose.Schema(
     block: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Block',
+      required: false, 
     },
     roomNumber: String,
 

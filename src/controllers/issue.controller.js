@@ -16,8 +16,12 @@ import smartAssignmentService from '../services/smartAssignment.service.js';
 import duplicateDetectionService from '../services/duplicateDetection.service.js';
 import { getIO, emitToUser, emitToManagement, emitToHostel, emitToIssue } from '../socket/index.js';
 
+const isValidObjectId = (id) => {
+  return mongoose.Types.ObjectId.isValid(id) && String(new mongoose.Types.ObjectId(id)) === String(id);
+};
+
 /**
- * Create new issue
+ * Create new issue - FIXED VERSION
  */
 export const createIssue = async (req, res) => {
   try {
@@ -45,6 +49,30 @@ export const createIssue = async (req, res) => {
       });
     }
 
+    // ✅ FIX 2: Validate hostel is provided
+    const finalHostelId = hostel || req.user.hostel;
+    if (!finalHostelId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Hostel information is required',
+      });
+    }
+
+    // ✅ FIX 3: Validate hostel ObjectId
+    if (!isValidObjectId(finalHostelId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid hostel ID format',
+      });
+    }
+
+    // ✅ FIX 4: Validate block ObjectId (if provided)
+    const finalBlockId = block || req.user.block;
+    if (finalBlockId && !isValidObjectId(finalBlockId)) {
+      console.warn(`Invalid block ID: ${finalBlockId}, ignoring it`);
+      // Don't return error, just ignore invalid block
+    }
+
     // ===== 2. PROCESS UPLOADED FILES =====
     let mediaUrls = [];
     if (files && files.length > 0) {
@@ -61,14 +89,19 @@ export const createIssue = async (req, res) => {
     // ===== 3. AI-POWERED ANALYSIS =====
     let aiAnalysis;
     try {
-      aiAnalysis = await aiService.analyzeIssueWithRAG({
-        title,
-        description,
-        userCategory: category,
-        userPriority: priority,
-        images: mediaUrls.map(m => m.mediaUrl),
-      });
-      console.log(`🤖 AI Analysis: ${aiAnalysis.category} - ${aiAnalysis.priority} (${(aiAnalysis.confidence * 100).toFixed(1)}%)`);
+      // ✅ FIX 5: Check if aiService method exists
+      if (aiService.analyzeIssueWithRAG) {
+        aiAnalysis = await aiService.analyzeIssueWithRAG({
+          title,
+          description,
+          userCategory: category,
+          userPriority: priority,
+          images: mediaUrls.map(m => m.mediaUrl),
+        });
+        console.log(`🤖 AI Analysis: ${aiAnalysis.category} - ${aiAnalysis.priority} (${(aiAnalysis.confidence * 100).toFixed(1)}%)`);
+      } else {
+        throw new Error('AI service method not available');
+      }
     } catch (aiError) {
       console.error('AI Service error:', aiError.message);
       aiAnalysis = {
@@ -79,23 +112,37 @@ export const createIssue = async (req, res) => {
       };
     }
 
-    // ===== 3. DUPLICATE PREVENTION LOGIC (NEW) =====
-    const duplicateCheck = await duplicateDetectionService.checkForDuplicate({
-      title,
-      description,
-      category: category || aiAnalysis.category,
-      hostel: hostel || req.user.hostel,
-      block: block || req.user.block
-    });
+    // ===== 4. DUPLICATE PREVENTION LOGIC =====
+    let duplicateCheck = { isDuplicate: false, similarityScore: 0, similarIssues: [] };
+    
+    try {
+      // ✅ FIX 6: Only pass valid ObjectIds to duplicate detection
+      const duplicateCheckParams = {
+        title,
+        description,
+        category: category || aiAnalysis.category,
+        hostel: finalHostelId,
+      };
 
-    // Update the similarIssues variable so the later .map() works
-    if (duplicateCheck.similarIssues && duplicateCheck.similarIssues.length > 0) {
-      similarIssues = duplicateCheck.similarIssues;
-    } else if (duplicateCheck.masterIssue) {
-      similarIssues = [duplicateCheck.masterIssue];
+      // Only add block if it's valid
+      if (finalBlockId && isValidObjectId(finalBlockId)) {
+        duplicateCheckParams.block = finalBlockId;
+      }
+
+      duplicateCheck = await duplicateDetectionService.checkForDuplicate(duplicateCheckParams);
+
+      // Update similarIssues
+      if (duplicateCheck.similarIssues && duplicateCheck.similarIssues.length > 0) {
+        similarIssues = duplicateCheck.similarIssues;
+      } else if (duplicateCheck.masterIssue) {
+        similarIssues = [duplicateCheck.masterIssue];
+      }
+
+      console.log(`DEBUG: Duplicate Score: ${duplicateCheck.similarityScore}`);
+    } catch (duplicateError) {
+      console.error('Duplicate detection error:', duplicateError.message);
+      // Continue without duplicate detection
     }
-
-    console.log(`DEBUG: Duplicate Score: ${duplicateCheck.similarityScore}`);
 
     // Demo Fail-Safe: If AI is 0 but title is exactly the same as an existing one
     if (duplicateCheck.similarityScore === 0) {
@@ -106,7 +153,7 @@ export const createIssue = async (req, res) => {
       });
       if (identicalIssue) {
         duplicateCheck.isDuplicate = true;
-        duplicateCheck.similarityScore = 0.98; // Force a high score
+        duplicateCheck.similarityScore = 0.98;
         duplicateCheck.masterIssue = identicalIssue;
       }
     }
@@ -117,14 +164,19 @@ export const createIssue = async (req, res) => {
 
       const duplicateResult = await duplicateDetectionService.createDuplicateIssue(
         {
-          title, description, category: category || aiAnalysis.category, priority: priority || aiAnalysis.priority,
-          hostel: hostel || req.user.hostel, block: block || req.user.block, roomNumber, reporter: userId
+          title, 
+          description, 
+          category: category || aiAnalysis.category, 
+          priority: priority || aiAnalysis.priority,
+          hostel: finalHostelId, 
+          block: finalBlockId && isValidObjectId(finalBlockId) ? finalBlockId : undefined,
+          roomNumber, 
+          reporter: userId
         },
         masterIssue,
         userId
       );
 
-      // Socket Emit to Management Room
       const io = getIO();
       if (io) io.to('management-room').emit('duplicate_issue_detected', { masterIssueId: masterIssue._id });
 
@@ -142,7 +194,10 @@ export const createIssue = async (req, res) => {
         success: false,
         requiresConfirmation: true,
         message: 'Similar issue already exists. Create anyway?',
-        data: { similarIssue: duplicateCheck.masterIssue || duplicateCheck.similarIssues[0], similarityScore: duplicateCheck.similarityScore }
+        data: { 
+          similarIssue: duplicateCheck.masterIssue || duplicateCheck.similarIssues[0], 
+          similarityScore: duplicateCheck.similarityScore 
+        }
       });
     }
 
@@ -154,8 +209,7 @@ export const createIssue = async (req, res) => {
       priority: priority || aiAnalysis.priority,
       isPublic: isPublic !== undefined ? isPublic === 'true' || isPublic === true : true,
 
-      hostel: hostel || req.user.hostel,
-      block: block || req.user.block,
+      hostel: finalHostelId,
       roomNumber: roomNumber || req.user.roomNumber,
 
       reporter: userId,
@@ -171,6 +225,11 @@ export const createIssue = async (req, res) => {
       status: 'REPORTED',
       reportedAt: new Date(),
     };
+
+    // ✅ FIX 7: Only add block if it's a valid ObjectId
+    if (finalBlockId && isValidObjectId(finalBlockId)) {
+      issueData.block = finalBlockId;
+    }
 
     const issue = await IssueModel.create(issueData);
     console.log(`✅ Issue created: ${issue._id}`);
@@ -206,7 +265,7 @@ export const createIssue = async (req, res) => {
       console.error('Status history error:', historyError.message);
     }
 
-    // ===== NEW: GET SMART ASSIGNMENT RECOMMENDATIONS =====
+    // ===== 8. SMART ASSIGNMENT RECOMMENDATIONS =====
     let assignmentRecommendations = null;
     let autoAssignResult = null;
 
@@ -218,7 +277,6 @@ export const createIssue = async (req, res) => {
 
       console.log(`🤖 Smart Assignment: ${assignmentRecommendations.recommendations.length} recommendations`);
 
-      // Auto-assign if confidence is high enough
       if (assignmentRecommendations.autoAssignRecommended) {
         autoAssignResult = await smartAssignmentService.autoAssignIssue(
           issue._id,
@@ -228,7 +286,6 @@ export const createIssue = async (req, res) => {
         if (autoAssignResult.success) {
           console.log(`✅ Auto-assigned to ${autoAssignResult.assignedStaff.fullName}`);
 
-          // Update the issue object with assignment data
           issue.assignedTo = autoAssignResult.assignedStaff._id;
           issue.assignedAt = new Date();
           issue.status = 'ASSIGNED';
@@ -237,10 +294,9 @@ export const createIssue = async (req, res) => {
       }
     } catch (assignError) {
       console.error('Assignment recommendation error:', assignError.message);
-      // Continue even if assignment fails
     }
 
-    // ===== 8. POPULATE ISSUE FOR RESPONSE =====
+    // ===== 9. POPULATE ISSUE FOR RESPONSE =====
     const populatedIssue = await IssueModel.findById(issue._id)
       .populate('reporter', 'fullName email phone profileImage')
       .populate('hostel', 'name location')
@@ -248,7 +304,7 @@ export const createIssue = async (req, res) => {
       .populate('assignedTo', 'fullName role phone email')
       .lean();
 
-    // ===== 9. SEND NOTIFICATIONS =====
+    // ===== 10. SEND NOTIFICATIONS =====
     try {
       await notificationService.notifyManagement({
         type: 'ISSUE_CREATED',
@@ -263,7 +319,7 @@ export const createIssue = async (req, res) => {
       console.error('Notification error:', notifyError.message);
     }
 
-    // ===== 10. EMIT SOCKET EVENT =====
+    // ===== 11. EMIT SOCKET EVENT =====
     try {
       const io = req.app.get('io');
       if (io) {
@@ -285,7 +341,7 @@ export const createIssue = async (req, res) => {
       console.log('⚠️ Socket not ready, skipping real-time update');
     }
 
-    // ===== 11. RETURN RESPONSE =====
+    // ===== 12. RETURN RESPONSE =====
     res.status(201).json({
       success: true,
       message: 'Issue created successfully',
@@ -297,12 +353,10 @@ export const createIssue = async (req, res) => {
           suggestedPriority: aiAnalysis.priority,
           confidence: aiAnalysis.confidence,
           reasoning: aiAnalysis.reasoning,
-
           suggestedSolution: aiAnalysis.suggestedSolution,
           similarPastIssues: aiAnalysis.similarPastIssues,
           estimatedResolutionTime: aiAnalysis.estimatedResolutionTime,
           recommendedStaff: aiAnalysis.recommendedStaff,
-
           usedCategory: populatedIssue.category,
           usedPriority: populatedIssue.priority,
         },
@@ -1403,6 +1457,105 @@ export const getDuplicates = async (req, res) => {
       success: false,
       message: 'Error fetching duplicates',
       error: error.message
+    });
+  }
+};
+
+/**
+ * Get all comments for an issue
+ */
+export const getComments = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.userId;
+    const userRole = req.user.role;
+
+    const issue = await IssueModel.findById(id);
+
+    if (!issue) {
+      return res.status(404).json({
+        success: false,
+        message: 'Issue not found',
+      });
+    }
+
+    // Permission check
+    if (
+      userRole === 'STUDENT' &&
+      !issue.isPublic &&
+      issue.reporter.toString() !== userId
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied',
+      });
+    }
+
+    const comments = await IssueCommentModel.find({ issue: id })
+      .populate('user', 'fullName role profileImage')
+      .sort({ createdAt: 1 })
+      .lean();
+
+    res.json({
+      success: true,
+      data: {
+        count: comments.length,
+        comments,
+      },
+    });
+
+  } catch (error) {
+    console.error('Get comments error:', error);
+
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching comments',
+      error: error.message,
+    });
+  }
+};
+/**
+ * Get all reactions for an issue
+ */
+export const getReactions = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const issue = await IssueModel.findById(id);
+
+    if (!issue) {
+      return res.status(404).json({
+        success: false,
+        message: 'Issue not found',
+      });
+    }
+
+    const reactions = await IssueReactionModel.find({ issue: id })
+      .populate('user', 'fullName profileImage')
+      .lean();
+
+    // Group reactions by type
+    const summary = reactions.reduce((acc, reaction) => {
+      acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+      return acc;
+    }, {});
+
+    res.json({
+      success: true,
+      data: {
+        total: reactions.length,
+        summary,   // { thumbs_up: 3, fire: 1 }
+        reactions, // full list
+      },
+    });
+
+  } catch (error) {
+    console.error('Get reactions error:', error);
+
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching reactions',
+      error: error.message,
     });
   }
 };

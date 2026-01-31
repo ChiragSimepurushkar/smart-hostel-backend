@@ -121,6 +121,16 @@ app.use('*', (req, res) => {
   });
 });
 
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'SmartWard Backend API Running 🚀',
+    docs: '/api',
+    health: '/health'
+  });
+});
+
+
 // Global error handler
 app.use(errorHandler);
 
